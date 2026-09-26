@@ -3,7 +3,6 @@ import { google } from 'googleapis';
 
 export async function GET() {
   try {
-    // 1. התחברות מאובטחת לגוגל
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -14,22 +13,17 @@ export async function GET() {
 
     const sheets = google.sheets({ version: 'v4', auth });
     
-    // 2. משיכת כל עמודות A עד F
-    const response = await sheets.spreadsheets.values.get({
+    // משיכת נתונים משתי לשוניות במקביל לחסכון בזמן
+    const response = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: process.env.SPREADSHEET_ID,
-      range: 'A:F', 
+      ranges: ['סיכום_מצב!A:F', "'מעקב תקציב שבועי ויעדי פרישה'!A:F"], 
     });
 
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) {
-      return NextResponse.json({ error: 'לא נמצאו נתונים' }, { status: 404 });
-    }
+    const summaryRows = response.data.valueRanges?.[0]?.values || [];
+    const transactionRows = response.data.valueRanges?.[1]?.values || [];
 
-    // 3. איתור דינמי של שורת הסיכום (הגנה מפני דחיפת שורות של Make)
-    const summaryHeaderIndex = rows.findIndex(row => row[0] && row[0].includes('סיכום שבועי וחודשי'));
-    
-    if (summaryHeaderIndex === -1) {
-      return NextResponse.json({ error: 'טבלת הסיכום לא נמצאה' }, { status: 404 });
+    if (summaryRows.length === 0) {
+      return NextResponse.json({ error: 'לא נמצאו נתוני סיכום. ודא שללשונית קוראים סיכום_מצב' }, { status: 404 });
     }
 
     const categories = [];
@@ -37,19 +31,18 @@ export async function GET() {
     let totalSpent = 0;
     let totalLeft = 0;
 
-    // פונקציית עזר לניקוי סימני ₪ ופסיקים והמרה למספר
     const parseCurrency = (val: string) => Number(String(val).replace(/[^0-9.-]+/g,""));
 
-    // 4. קריאת 5 קטגוריות הסיכום (עמודות: A=שם, D=יעד, E=בפועל, F=יתרה)
+    // קריאת 5 קטגוריות הסיכום (שורות 2 עד 6 בלשונית החדשה)
     for (let i = 1; i <= 5; i++) {
-      const row = rows[summaryHeaderIndex + i];
-      if (!row) continue;
+      const row = summaryRows[i];
+      if (!row || !row[0]) continue;
       
       const name = row[0];
-      const target = parseCurrency(row[3] || '0');
-      const spent = parseCurrency(row[4] || '0');
-      const left = parseCurrency(row[5] || '0');
-      
+      const target = parseCurrency(row[1] || '0'); // עכשיו זה עמודה B
+      const spent = parseCurrency(row[2] || '0');  // עמודה C
+      const left = parseCurrency(row[3] || '0');   // עמודה D
+
       let icon = '🛒'; let iconBg = 'bg-gray-50'; let color = 'bg-green-500';
       if (name.includes('סופר')) { icon = '🛒'; iconBg = 'bg-green-50'; }
       if (name.includes('מסעדות')) { icon = '🍔'; iconBg = 'bg-orange-50'; }
@@ -65,20 +58,19 @@ export async function GET() {
       totalLeft += left;
     }
 
-    // 5. חילוץ 5 העסקאות האחרונות (סורק אחורה מהסיכום למעלה)
+    // חילוץ כל העסקאות מהלשונית המקורית (סריקה מהסוף להתחלה)
     const recentTransactions = [];
-    for (let i = summaryHeaderIndex - 1; i >= 0; i--) {
-       const row = rows[i];
-       // בודק שיש תאריך בעמודה A וסכום בעמודה E
+    for (let i = transactionRows.length - 1; i >= 0; i--) {
+       const row = transactionRows[i];
        if (row && row[0] && row[0].includes('/') && row[4]) {
            recentTransactions.push({
                id: i,
                date: row[0],
-               desc: row[2] || 'ללא תיאור',
+               // פירוט העסק מעמודה D (אינדקס 3), ואם ריק לוקח מעמודה C
+               desc: row[3] || row[2] || 'ללא תיאור',
                amount: parseCurrency(row[4])
            });
        }
-       if (recentTransactions.length >= 5) break;
     }
 
     return NextResponse.json({
