@@ -13,14 +13,14 @@ export async function GET() {
 
     const sheets = google.sheets({ version: 'v4', auth });
     
-    // משיכת נתונים משתי לשוניות במקביל לחסכון בזמן
     const response = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: process.env.SPREADSHEET_ID,
-      ranges: ['סיכום_מצב!A:F', "'מעקב תקציב שבועי ויעדי פרישה'!A:F"], 
+      ranges: ['סיכום_מצב!A:F', "'מעקב תקציב שבועי ויעדי פרישה'!A:F", "'יעדים_חודשיים'!A:A"], 
     });
 
     const summaryRows = response.data.valueRanges?.[0]?.values || [];
     const transactionRows = response.data.valueRanges?.[1]?.values || [];
+    const futureTargetsRows = response.data.valueRanges?.[2]?.values || []; 
 
     if (summaryRows.length === 0) {
       return NextResponse.json({ error: 'לא נמצאו נתוני סיכום. ודא שללשונית קוראים סיכום_מצב' }, { status: 404 });
@@ -33,16 +33,15 @@ export async function GET() {
 
     const parseCurrency = (val: string) => Number(String(val).replace(/[^0-9.-]+/g,""));
 
-    // קריאת 5 קטגוריות הסיכום (שורות 2 עד 6 בלשונית החדשה)
     for (let i = 1; i <= 5; i++) {
       const row = summaryRows[i];
       if (!row || !row[0]) continue;
       
       const name = row[0];
-      const target = parseCurrency(row[1] || '0'); // עכשיו זה עמודה B
-      const spent = parseCurrency(row[2] || '0');  // עמודה C
-      const left = parseCurrency(row[3] || '0');   // עמודה D
-
+      const target = parseCurrency(row[1] || '0'); 
+      const spent = parseCurrency(row[2] || '0');  
+      const left = parseCurrency(row[3] || '0');   
+      
       let icon = '🛒'; let iconBg = 'bg-gray-50'; let color = 'bg-green-500';
       if (name.includes('סופר')) { icon = '🛒'; iconBg = 'bg-green-50'; }
       if (name.includes('מסעדות')) { icon = '🍔'; iconBg = 'bg-orange-50'; }
@@ -58,7 +57,6 @@ export async function GET() {
       totalLeft += left;
     }
 
-    // חילוץ כל העסקאות מהלשונית המקורית (סריקה מהסוף להתחלה)
     const recentTransactions = [];
     for (let i = transactionRows.length - 1; i >= 0; i--) {
        const row = transactionRows[i];
@@ -66,11 +64,22 @@ export async function GET() {
            recentTransactions.push({
                id: i,
                date: row[0],
-               // פירוט העסק מעמודה D (אינדקס 3), ואם ריק לוקח מעמודה C
                desc: row[3] || row[2] || 'ללא תיאור',
                amount: parseCurrency(row[4])
            });
        }
+    }
+
+    const today = new Date();
+    const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const nextMonthString = `${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}-${nextMonthDate.getFullYear()}`;
+    
+    let isNextMonthPrepared = false;
+    for (const row of futureTargetsRows) {
+        if (row && row[0] === nextMonthString) {
+            isNextMonthPrepared = true;
+            break;
+        }
     }
 
     return NextResponse.json({
@@ -78,7 +87,8 @@ export async function GET() {
        totalBudget,
        totalSpent,
        totalLeft,
-       recentTransactions
+       recentTransactions,
+       isNextMonthPrepared
     });
 
   } catch (error: any) {
