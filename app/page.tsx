@@ -11,6 +11,7 @@ export default function BudgetDashboard() {
   const [showAllTxModal, setShowAllTxModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localNextMonthPrepared, setLocalNextMonthPrepared] = useState(false); // שומר מצב מקומי לאחר שמירה
+  const [editMonth, setEditMonth] = useState<'current' | 'next'>('next'); // איזה חודש נערך בחלון היעדים
   
   const [nextTargets, setNextTargets] = useState({
     super: '',
@@ -36,24 +37,53 @@ export default function BudgetDashboard() {
 
   const today = new Date();
   const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-  const nextMonthString = `${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}-${nextMonthDate.getFullYear()}`;
+  const clientNextMonth = `${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}-${nextMonthDate.getFullYear()}`;
+  const clientCurrentMonth = `${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
+  const currentMonthKey: string = data?.currentMonth || clientCurrentMonth;
+  const nextMonthKey: string = data?.nextMonth || clientNextMonth;
+  const editMonthKey = editMonth === 'current' ? currentMonthKey : nextMonthKey;
+
+  // פתיחת חלון היעדים עם הערכים הקיימים של החודש (אם יש)
+  const loadTargetsFor = (which: 'current' | 'next') => {
+    const key = which === 'current' ? currentMonthKey : nextMonthKey;
+    const existing = data?.targets?.[key];
+    setEditMonth(which);
+    setNextTargets({
+      super: existing ? String(existing.super) : '',
+      restaurants: existing ? String(existing.restaurants) : '',
+      shopping: existing ? String(existing.shopping) : '',
+      vacation: existing ? String(existing.vacation) : '',
+      transport: existing ? String(existing.transport) : '',
+    });
+  };
+  const openTargetsModal = (which: 'current' | 'next') => {
+    loadTargetsFor(which);
+    setShowNextMonthModal(true);
+  };
   const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   const daysLeft = daysInMonth - today.getDate();
   const isLastWeek = daysLeft <= 7;
 
   const handleSaveNextMonth = async () => {
+    if (Object.values(nextTargets).some(v => v === '')) {
+      alert('יש למלא סכום בכל הקטגוריות');
+      return;
+    }
     setIsSubmitting(true);
     try {
-      await fetch('/api/next-month', {
+      const res = await fetch('/api/next-month', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ month: nextMonthString, targets: nextTargets })
+        body: JSON.stringify({ month: editMonthKey, targets: nextTargets })
       });
-      alert('היעדים לחודש הבא נשמרו בהצלחה בגיליון!');
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result?.error || 'השמירה נכשלה');
+      alert(result.mode === 'updated' ? `היעדים של ${editMonthKey} עודכנו בגיליון` : `היעדים של ${editMonthKey} נשמרו בגיליון`);
       setShowNextMonthModal(false);
-      setLocalNextMonthPrepared(true); // מעלים את הכפתור הגדול מיד לאחר שמירה
-    } catch (error) {
-      alert('שגיאה בשמירת היעדים');
+      if (editMonth === 'next') setLocalNextMonthPrepared(true); // מעלים את הכפתור הגדול מיד לאחר שמירה
+      fetchBudget(); // רענון הנתונים כך שהיעדים החדשים יופיעו מיד
+    } catch (error: any) {
+      alert(`שגיאה בשמירת היעדים: ${error.message}`);
     }
     setIsSubmitting(false);
   };
@@ -76,12 +106,33 @@ export default function BudgetDashboard() {
     return "bg-white border-slate-100";
   };
 
-  // מנגנון תובנה יומית
+  // מנגנון תובנה יומית — מציג את ההתראה הדחופה ביותר, ובשורה שנייה תקציב יומי
+  const dayOfMonth = today.getDate();
+  const daysRemaining = daysInMonth - dayOfMonth + 1; // כולל היום
+  const fmt = (n: number) => `₪${Math.round(n).toLocaleString()}`;
+  const cats: any[] = data?.categories || [];
   let insightMsg = '';
   let insightColor = '';
-  if (budgetProgress > timeProgress + 10) {
-      insightMsg = "קצב ההוצאות גבוה ביחס לזמן שעבר";
+
+  const exceeded = cats.filter(c => c.target > 0 && c.spent > c.target)
+    .sort((a, b) => (b.spent - b.target) - (a.spent - a.target))[0];
+  const projected = dayOfMonth >= 7
+    ? cats.map(c => ({ ...c, proj: (c.spent / dayOfMonth) * daysInMonth }))
+        .filter(c => c.target > 0 && c.proj > c.target)
+        .sort((a, b) => (b.proj - b.target) - (a.proj - a.target))[0]
+    : undefined;
+  const aboveAvg = cats.filter(c => c.avg > 0 && c.spent > c.avg)
+    .sort((a, b) => (b.spent - b.avg) - (a.spent - a.avg))[0];
+
+  if (exceeded) {
+      insightMsg = `${exceeded.name}: חריגה של ${fmt(exceeded.spent - exceeded.target)} מעל היעד`;
       insightColor = "text-red-400";
+  } else if (projected) {
+      insightMsg = `${projected.name}: בקצב הנוכחי ייסגר בכ-${fmt(projected.proj)}, ${fmt(projected.proj - projected.target)} מעל היעד`;
+      insightColor = "text-red-400";
+  } else if (aboveAvg) {
+      insightMsg = `${aboveAvg.name}: ${fmt(aboveAvg.spent)} החודש, מעל הממוצע החודשי (${fmt(aboveAvg.avg)})`;
+      insightColor = "text-orange-300";
   } else if (budgetProgress < timeProgress - 10) {
       insightMsg = "התנהלות מצוינת! אתה ביתרה חיובית לזמן זה";
       insightColor = "text-emerald-400";
@@ -89,6 +140,9 @@ export default function BudgetDashboard() {
       insightMsg = "התקציב מתנהל בצורה מאוזנת ובהתאם לתוכנית";
       insightColor = "text-blue-300";
   }
+  const dailyMsg = (data?.totalLeft ?? 0) > 0
+    ? `נשארו ${fmt(data.totalLeft)} ל-${daysRemaining} ימים · כ-${fmt(data.totalLeft / daysRemaining)} ליום`
+    : `חריגה מהתקציב החודשי של ${fmt(Math.abs(data?.totalLeft ?? 0))}`;
 
   // האם להציג את פופאפ היעדים הגדול? (רק בשבוע האחרון + אם לא דווח שהוכן)
   const isPrepared = data?.isNextMonthPrepared || localNextMonthPrepared;
@@ -121,9 +175,10 @@ export default function BudgetDashboard() {
             </h2>
             
             {/* Daily Insight */}
-            <div className={`mt-3 text-[11px] font-medium flex items-center justify-center ${insightColor} bg-slate-800/50 w-fit mx-auto px-3 py-1 rounded-full border border-slate-700/50`}>
-                <Lightbulb className="w-3 h-3 ml-1" /> {insightMsg}
+            <div className={`mt-3 text-[11px] font-medium flex items-center justify-center text-center ${insightColor} bg-slate-800/50 w-fit max-w-full mx-auto px-3 py-1 rounded-full border border-slate-700/50`}>
+                <Lightbulb className="w-3 h-3 ml-1 shrink-0" /> {insightMsg}
             </div>
+            <div className="mt-1.5 text-[10px] text-slate-400">{dailyMsg}</div>
           </div>
           
           <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700 backdrop-blur-sm mt-6">
@@ -180,8 +235,14 @@ export default function BudgetDashboard() {
                                 <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full backdrop-blur-sm">{cat.pct}%</span>
                             </div>
                             <h3 className="text-xs font-bold text-slate-600 mb-0.5">{cat.name}</h3>
-                            <div className={`font-black text-lg tracking-tight ${cat.pct >= 100 ? 'text-red-700' : 'text-slate-900'}`}>
-                                ₪{cat.left?.toLocaleString() || 0}
+                            <div className="flex justify-between items-baseline">
+                                <span className="text-xs font-bold text-slate-600">יתרה</span>
+                                <span className={`font-black text-lg tracking-tight ${cat.pct >= 100 ? 'text-red-700' : 'text-slate-900'}`}>₪{cat.left?.toLocaleString() || 0}</span>
+                            </div>
+                            <div className="mt-1.5 mb-1 space-y-0.5 text-[10px] font-medium text-slate-500">
+                                <div className="flex justify-between"><span>יעד</span><span className="font-bold text-slate-600">₪{Math.round(cat.target || 0).toLocaleString()}</span></div>
+                                <div className="flex justify-between"><span>ממוצע חודשי</span><span className="font-bold text-slate-600">₪{Math.round(cat.avg || 0).toLocaleString()}</span></div>
+                                <div className="flex justify-between"><span>נגרר מחודש קודם</span><span className={`font-bold ${(cat.carry || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>₪{Math.round(cat.carry || 0).toLocaleString()}</span></div>
                             </div>
                             <div className="absolute bottom-0 left-0 w-full bg-slate-900/5 h-1">
                                 <div className={`${cat.pct >= 100 ? 'bg-red-500' : (cat.pct >= 60 ? 'bg-orange-400' : 'bg-slate-800')} h-1`} style={{ width: `${Math.min(cat.pct, 100)}%` }}></div>
@@ -194,7 +255,7 @@ export default function BudgetDashboard() {
             {/* הכנת תקציב לחודש הבא - מופיע רק בשבוע האחרון ואם לא הוכן */}
             {showBigTargetButton && (
                 <div 
-                  onClick={() => setShowNextMonthModal(true)}
+                  onClick={() => openTargetsModal('next')}
                   className="mt-6 mb-2 bg-blue-50 border border-blue-100 rounded-2xl p-4 flex items-center justify-between cursor-pointer active:scale-95 transition-transform shadow-sm">
                     <div className="flex items-center space-x-3 space-x-reverse">
                         <CalendarDays className="text-blue-600 w-5 h-5" />
@@ -210,7 +271,7 @@ export default function BudgetDashboard() {
             {/* כפתור נסתר ועדין למטה - עריכת יעדים קבועה */}
             <div className="mt-6 text-center">
                 <span 
-                    onClick={() => setShowNextMonthModal(true)}
+                    onClick={() => openTargetsModal('current')}
                     className="text-xs font-medium text-slate-400 hover:text-slate-600 cursor-pointer flex items-center justify-center transition-colors">
                     <Edit3 className="w-3 h-3 ml-1" /> עריכת יעדי תקציב
                 </span>
@@ -222,30 +283,50 @@ export default function BudgetDashboard() {
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex justify-center items-end z-50 fixed">
             <div className="bg-white w-full rounded-t-[2.5rem] p-6 shadow-2xl animate-in slide-in-from-bottom-10">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-black text-slate-900">יעדי {nextMonthString}</h3>
+                <h3 className="text-xl font-black text-slate-900">יעדי {editMonthKey}</h3>
                 <X className="w-6 h-6 text-slate-400 cursor-pointer hover:text-slate-700" onClick={() => setShowNextMonthModal(false)} />
               </div>
               
+              <div className="flex bg-slate-100 rounded-xl p-1 mb-5 text-sm font-bold">
+                {(['current', 'next'] as const).map(which => (
+                  <button
+                    key={which}
+                    onClick={() => loadTargetsFor(which)}
+                    className={`flex-1 py-2 rounded-lg transition-colors ${editMonth === which ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>
+                    {which === 'current' ? `חודש נוכחי (${currentMonthKey})` : `חודש הבא (${nextMonthKey})`}
+                  </button>
+                ))}
+              </div>
+              <div className="text-center mb-4">
+                <div className="text-[11px] font-medium text-slate-400">סה"כ תקציב לחודש</div>
+                <div className="text-3xl font-black text-slate-900 tracking-tight">
+                  ₪{Object.values(nextTargets).reduce((sum, v) => sum + (Number(v) || 0), 0).toLocaleString()}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-400 mb-4 -mt-2">
+                {data?.targets?.[editMonthKey] ? 'קיימים יעדים לחודש זה — השמירה תעדכן אותם' : 'אין עדיין יעדים לחודש זה — השמירה תיצור אותם'}
+              </p>
+
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-bold text-slate-700">סופר ומשק בית</span>
-                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" onChange={e => setNextTargets({...nextTargets, super: e.target.value})} />
+                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" value={nextTargets.super} onChange={e => setNextTargets({...nextTargets, super: e.target.value})} />
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-bold text-slate-700">מסעדות בחוץ</span>
-                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" onChange={e => setNextTargets({...nextTargets, restaurants: e.target.value})} />
+                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" value={nextTargets.restaurants} onChange={e => setNextTargets({...nextTargets, restaurants: e.target.value})} />
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-bold text-slate-700">קניות שונות</span>
-                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" onChange={e => setNextTargets({...nextTargets, shopping: e.target.value})} />
+                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" value={nextTargets.shopping} onChange={e => setNextTargets({...nextTargets, shopping: e.target.value})} />
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-bold text-slate-700">חופשות ונופש</span>
-                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" onChange={e => setNextTargets({...nextTargets, vacation: e.target.value})} />
+                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" value={nextTargets.vacation} onChange={e => setNextTargets({...nextTargets, vacation: e.target.value})} />
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-bold text-slate-700">דלק ותחבורה</span>
-                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" onChange={e => setNextTargets({...nextTargets, transport: e.target.value})} />
+                  <input type="number" placeholder="₪" className="w-24 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 placeholder:text-slate-300 outline-none focus:border-blue-500 focus:bg-white" value={nextTargets.transport} onChange={e => setNextTargets({...nextTargets, transport: e.target.value})} />
                 </div>
               </div>
 
@@ -264,12 +345,24 @@ export default function BudgetDashboard() {
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex justify-center items-end z-50 fixed">
             <div className="bg-white w-full h-[85%] rounded-t-[2.5rem] p-6 shadow-2xl flex flex-col animate-in slide-in-from-bottom-10">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-black text-slate-900">כל ההוצאות - החודש</h3>
+                <h3 className="text-xl font-black text-slate-900">כל ההוצאות - {currentMonthKey}</h3>
                 <X className="w-6 h-6 text-slate-400 cursor-pointer hover:text-slate-700" onClick={() => setShowAllTxModal(false)} />
               </div>
               
+              <div className="-mt-3 mb-4 text-xs text-slate-500 font-medium">
+                {data?.monthTransactions?.length || 0} עסקאות · סה"כ <span className="font-bold text-slate-800">₪{Math.round(data?.monthTotal || 0).toLocaleString()}</span>
+                {Math.round(data?.monthTotal || 0) !== Math.round(data?.totalSpent || 0) && (
+                  <div className="mt-1 text-[11px] text-orange-600">
+                    לא תואם לניצול (₪{Math.round(data?.totalSpent || 0).toLocaleString()}) — ייתכן שיש עסקה עם קטגוריה לא מוכרת
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-between text-[11px] font-bold text-slate-400 border-b border-slate-200 pb-2 mb-3 px-1">
+                <span>תאריך · תיאור</span>
+                <span>סכום</span>
+              </div>
               <div className="flex-1 overflow-y-auto pr-2 space-y-3">
-                {data?.recentTransactions?.map((tx: any) => (
+                {data?.monthTransactions?.map((tx: any) => (
                     <div key={tx.id} className="flex justify-between items-center text-sm border-b border-slate-100 pb-3 last:border-0">
                         <div className="flex items-center space-x-3 space-x-reverse">
                             <div className="w-10 h-10 rounded-full bg-slate-50 flex flex-col items-center justify-center border border-slate-100">
@@ -284,7 +377,7 @@ export default function BudgetDashboard() {
                         <span className="font-black text-slate-900 tracking-tight text-base">₪{tx.amount?.toLocaleString() || 0}</span>
                     </div>
                 ))}
-                {data?.recentTransactions?.length === 0 && (
+                {(data?.monthTransactions?.length || 0) === 0 && (
                   <div className="text-center text-slate-500 mt-10">אין עסקאות החודש</div>
                 )}
               </div>
