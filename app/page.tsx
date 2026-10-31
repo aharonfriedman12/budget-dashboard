@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronLeft, RefreshCw, Wallet, CalendarDays, History, X, Edit3, Lightbulb } from 'lucide-react';
 
 export default function BudgetDashboard() {
@@ -9,6 +9,7 @@ export default function BudgetDashboard() {
   // ניהול חלונות קופצים (Modals)
   const [showNextMonthModal, setShowNextMonthModal] = useState(false);
   const [showAllTxModal, setShowAllTxModal] = useState(false);
+  const [txCategory, setTxCategory] = useState<string | null>(null); // סינון רשימת העסקאות לקטגוריה (null = הכל)
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localNextMonthPrepared, setLocalNextMonthPrepared] = useState(false); // שומר מצב מקומי לאחר שמירה
   const [editMonth, setEditMonth] = useState<'current' | 'next'>('next'); // איזה חודש נערך בחלון היעדים
@@ -21,10 +22,14 @@ export default function BudgetDashboard() {
     transport: ''
   });
 
-  const fetchBudget = async () => {
+  const lastFetchRef = useRef(0);
+  const viewMonthRef = useRef<string | null>(null); // החודש המוצג (null = החודש הנוכחי)
+  const fetchBudget = async (month: string | null = viewMonthRef.current) => {
+    viewMonthRef.current = month;
+    lastFetchRef.current = Date.now();
     setIsLoading(true);
     try {
-      const res = await fetch('/api/budget');
+      const res = await fetch(month ? `/api/budget?month=${month}` : '/api/budget');
       const result = await res.json();
       if (res.ok) setData(result);
     } catch (err) {
@@ -34,6 +39,15 @@ export default function BudgetDashboard() {
   };
 
   useEffect(() => { fetchBudget(); }, []);
+
+  // רענון אוטומטי כשחוזרים לאפליקציה (למשל אחרי רישום בבוט), לכל היותר פעם ב-30 שניות
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastFetchRef.current > 30000) fetchBudget();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   const today = new Date();
   const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -81,7 +95,7 @@ export default function BudgetDashboard() {
       alert(result.mode === 'updated' ? `היעדים של ${editMonthKey} עודכנו בגיליון` : `היעדים של ${editMonthKey} נשמרו בגיליון`);
       setShowNextMonthModal(false);
       if (editMonth === 'next') setLocalNextMonthPrepared(true); // מעלים את הכפתור הגדול מיד לאחר שמירה
-      fetchBudget(); // רענון הנתונים כך שהיעדים החדשים יופיעו מיד
+      fetchBudget(); // רענון הנתונים כך שהיעדים החדשים יופיעו מיד (באותו חודש מוצג)
     } catch (error: any) {
       alert(`שגיאה בשמירת היעדים: ${error.message}`);
     }
@@ -141,12 +155,25 @@ export default function BudgetDashboard() {
       insightColor = "text-blue-300";
   }
   const dailyMsg = (data?.totalLeft ?? 0) > 0
-    ? `נשארו ${fmt(data.totalLeft)} ל-${daysRemaining} ימים · כ-${fmt(data.totalLeft / daysRemaining)} ליום`
+    ? (daysRemaining === 1
+        ? `נשארו ${fmt(data.totalLeft)} להיום, היום האחרון בחודש`
+        : `נשארו ${fmt(data.totalLeft)} ל-${daysRemaining} ימים · כ-${fmt(data.totalLeft / daysRemaining)} ליום`)
     : `חריגה מהתקציב החודשי של ${fmt(Math.abs(data?.totalLeft ?? 0))}`;
 
-  // האם להציג את פופאפ היעדים הגדול? (רק בשבוע האחרון + אם לא דווח שהוכן)
+  // ניווט בין חודשים
+  const HEB_MONTHS = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+  const monthLabel = (key: string) => { const [m, y] = (key || '').split('-'); return m ? `${HEB_MONTHS[Number(m) - 1]} ${y}` : ''; };
+  const isPast: boolean = Boolean(data?.isPastMonth);
+  const selectedMonth: string = data?.selectedMonth || currentMonthKey;
+  const months: string[] = data?.availableMonths || [currentMonthKey];
+  const monthIdx = months.indexOf(selectedMonth);
+  const prevMonth = monthIdx > 0 ? months[monthIdx - 1] : null;
+  const nextNavMonth = monthIdx >= 0 && monthIdx < months.length - 1 ? months[monthIdx + 1] : null;
+  const goToMonth = (m: string | null) => { if (m) fetchBudget(m === currentMonthKey ? null : m); };
+
+  // האם להציג את פופאפ היעדים הגדול? (רק בשבוע האחרון + אם לא דווח שהוכן, ורק בחודש הנוכחי)
   const isPrepared = data?.isNextMonthPrepared || localNextMonthPrepared;
-  const showBigTargetButton = isLastWeek && !isPrepared;
+  const showBigTargetButton = isLastWeek && !isPrepared && !isPast;
 
   return (
     <div className="min-h-screen bg-slate-50 flex justify-center pb-8 font-sans" dir="rtl">
@@ -155,33 +182,46 @@ export default function BudgetDashboard() {
         {/* Header */}
         <div className="bg-slate-900 p-5 pb-8 text-white rounded-b-[2.5rem] shadow-lg relative">
           <div className="flex justify-between items-center mb-4">
-            <RefreshCw className={`w-5 h-5 text-slate-400 cursor-pointer ${isLoading ? 'animate-spin' : ''}`} onClick={fetchBudget} />
+            <RefreshCw className={`w-5 h-5 text-slate-400 cursor-pointer ${isLoading ? 'animate-spin' : ''}`} onClick={() => fetchBudget()} />
             <h1 className="text-lg font-bold tracking-wide">תקציב אישי</h1>
             <Wallet className="w-5 h-5 text-slate-400" />
           </div>
           
           <div className="flex justify-center items-center space-x-3 space-x-reverse mb-6">
-            <ChevronRight className="w-4 h-4 cursor-pointer text-slate-400 hover:text-white" />
+            <ChevronRight
+              onClick={() => goToMonth(prevMonth)}
+              className={`w-5 h-5 ${prevMonth ? 'cursor-pointer text-slate-300 hover:text-white' : 'text-slate-700'}`} />
             <span className="text-sm font-semibold tracking-wider bg-slate-800 px-4 py-1 rounded-full border border-slate-700">
-              {today.getMonth() + 1}/{today.getFullYear()}
+              {monthLabel(selectedMonth)}
             </span>
-            <ChevronLeft className="w-4 h-4 cursor-pointer text-slate-400 hover:text-white" />
+            <ChevronLeft
+              onClick={() => goToMonth(nextNavMonth)}
+              className={`w-5 h-5 ${nextNavMonth ? 'cursor-pointer text-slate-300 hover:text-white' : 'text-slate-700'}`} />
           </div>
           
           <div className="text-center mb-5">
-            <p className="text-slate-400 text-xs mb-1 uppercase tracking-widest">יתרה זמינה</p>
+            <p className={`text-xs mb-1 uppercase tracking-widest ${(data?.totalLeft ?? 0) < 0 ? 'text-red-400' : 'text-slate-400'}`}>{(data?.totalLeft ?? 0) < 0 ? 'חריגה מהתקציב' : (isPast ? 'נחסך בחודש' : 'יתרה זמינה')}</p>
             <h2 className="text-5xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-slate-300 drop-shadow-sm">
-              ₪{data?.totalLeft?.toLocaleString() || 0}
+              ₪{Math.abs(data?.totalLeft ?? 0).toLocaleString()}
             </h2>
             
-            {/* Daily Insight */}
-            <div className={`mt-3 text-[11px] font-medium flex items-center justify-center text-center ${insightColor} bg-slate-800/50 w-fit max-w-full mx-auto px-3 py-1 rounded-full border border-slate-700/50`}>
-                <Lightbulb className="w-3 h-3 ml-1 shrink-0" /> {insightMsg}
-            </div>
-            <div className="mt-1.5 text-[10px] text-slate-400">{dailyMsg}</div>
+            {isPast ? (
+              <div className="mt-3 text-[11px] font-medium text-slate-300 bg-slate-800/50 w-fit mx-auto px-3 py-1 rounded-full border border-slate-700/50">
+                🔒 חודש סגור · <span className="underline cursor-pointer" onClick={() => goToMonth(currentMonthKey)}>חזרה לחודש הנוכחי</span>
+              </div>
+            ) : (
+              <>
+                {/* Daily Insight */}
+                <div className={`mt-3 text-[11px] font-medium flex items-center justify-center text-center ${insightColor} bg-slate-800/50 w-fit max-w-full mx-auto px-3 py-1 rounded-full border border-slate-700/50`}>
+                    <Lightbulb className="w-3 h-3 ml-1 shrink-0" /> {insightMsg}
+                </div>
+                <div className="mt-1.5 text-[10px] text-slate-400">{dailyMsg}</div>
+              </>
+            )}
           </div>
           
           <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700 backdrop-blur-sm mt-6">
+             {!isPast && (
              <div className="mb-3">
                <div className="flex justify-between text-xs text-slate-300 mb-1.5 font-medium">
                  <span>זמן חודש ({today.getDate()}/{daysInMonth})</span><span>{timeProgress}%</span>
@@ -190,6 +230,7 @@ export default function BudgetDashboard() {
                  <div className="bg-blue-400 h-1 rounded-full" style={{ width: `${timeProgress}%` }}></div>
                </div>
              </div>
+             )}
              <div>
                <div className="flex justify-between text-xs text-slate-300 mb-1.5 font-medium">
                  <span>ניצול ₪{data?.totalSpent?.toLocaleString() || 0} / ₪{data?.totalBudget?.toLocaleString() || 0}</span>
@@ -207,19 +248,20 @@ export default function BudgetDashboard() {
             <div className="flex justify-between items-end mb-3 px-1">
                 <span className="text-sm font-bold text-slate-800">פעולות אחרונות</span>
                 <span 
-                  onClick={() => setShowAllTxModal(true)}
+                  onClick={() => { setTxCategory(null); setShowAllTxModal(true); }}
                   className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full flex items-center cursor-pointer active:bg-blue-100 transition-colors">
                   <History className="w-3 h-3 ml-1"/> צפה הכל
                 </span>
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm px-4 py-2 space-y-2.5">
-                {data?.recentTransactions?.slice(0, 3).map((tx: any) => (
+                {(isPast ? data?.monthTransactions : data?.recentTransactions)?.slice(0, 3).map((tx: any) => (
                     <div key={tx.id} className="flex justify-between items-center text-sm border-b border-slate-50 last:border-0 pb-2.5 last:pb-1">
                         <div className="flex items-center space-x-3 space-x-reverse">
                             <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 text-xs font-medium border border-slate-100">{tx.date?.split('/')[0] || ''}</div>
-                            <span className="font-semibold text-slate-700">{tx.desc}</span>
+                            <span className="font-semibold text-slate-700 truncate">{tx.desc}</span>
                         </div>
-                        <span className="font-bold text-slate-900 tracking-tight">₪{tx.amount?.toLocaleString() || 0}</span>
+                        <span className="flex-1 border-b-2 border-dotted border-slate-300 mx-3 self-center min-w-4"></span>
+                        <span className="font-bold text-slate-900 tracking-tight shrink-0">₪{tx.amount?.toLocaleString() || 0}</span>
                     </div>
                 ))}
             </div>
@@ -229,15 +271,17 @@ export default function BudgetDashboard() {
                 <span className="text-sm font-bold text-slate-800 px-1 mb-3 block">קטגוריות</span>
                 <div className="grid grid-cols-2 gap-3">
                     {data?.categories?.map((cat: any, idx: number) => (
-                        <div key={idx} className={`border p-3.5 rounded-2xl shadow-sm relative overflow-hidden transition-colors ${getCategoryStyle(cat.pct)}`}>
+                        <div key={idx}
+                          onClick={() => { setTxCategory(cat.name); setShowAllTxModal(true); }}
+                          className={`border p-3.5 rounded-2xl shadow-sm relative overflow-hidden transition-colors cursor-pointer active:scale-[0.98] ${getCategoryStyle(cat.pct)}`}>
                             <div className="flex justify-between items-start mb-4">
                                 <span className={`text-lg ${cat.iconBg} rounded-xl p-1.5 bg-white shadow-sm`}>{cat.icon}</span>
                                 <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full backdrop-blur-sm">{cat.pct}%</span>
                             </div>
                             <h3 className="text-xs font-bold text-slate-600 mb-0.5">{cat.name}</h3>
                             <div className="flex justify-between items-baseline">
-                                <span className="text-xs font-bold text-slate-600">יתרה</span>
-                                <span className={`font-black text-lg tracking-tight ${cat.pct >= 100 ? 'text-red-700' : 'text-slate-900'}`}>₪{cat.left?.toLocaleString() || 0}</span>
+                                <span className={`text-xs font-bold ${(cat.left || 0) < 0 ? 'text-red-700' : 'text-slate-600'}`}>{(cat.left || 0) < 0 ? 'חריגה' : 'יתרה'}</span>
+                                <span className={`font-black text-lg tracking-tight ${(cat.left || 0) < 0 || cat.pct >= 100 ? 'text-red-700' : 'text-slate-900'}`}>₪{Math.abs(cat.left || 0).toLocaleString()}</span>
                             </div>
                             <div className="mt-1.5 mb-1 space-y-0.5 text-[10px] font-medium text-slate-500">
                                 <div className="flex justify-between"><span>יעד</span><span className="font-bold text-slate-600">₪{Math.round(cat.target || 0).toLocaleString()}</span></div>
@@ -281,7 +325,7 @@ export default function BudgetDashboard() {
         {/* Modal: הזנת יעדים */}
         {showNextMonthModal && (
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex justify-center items-end z-50 fixed">
-            <div className="bg-white w-full rounded-t-[2.5rem] p-6 shadow-2xl animate-in slide-in-from-bottom-10">
+            <div className="bg-white w-full max-w-md rounded-t-[2.5rem] p-6 shadow-2xl animate-in slide-in-from-bottom-10">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-xl font-black text-slate-900">יעדי {editMonthKey}</h3>
                 <X className="w-6 h-6 text-slate-400 cursor-pointer hover:text-slate-700" onClick={() => setShowNextMonthModal(false)} />
@@ -340,20 +384,24 @@ export default function BudgetDashboard() {
           </div>
         )}
 
-        {/* Modal: כל העסקאות */}
-        {showAllTxModal && (
+        {/* Modal: כל העסקאות (או עסקאות של קטגוריה אחת) */}
+        {showAllTxModal && (() => {
+          const txList: any[] = (data?.monthTransactions || []).filter((tx: any) => !txCategory || tx.category === txCategory.trim());
+          const txTotal = txList.reduce((sum: number, tx: any) => sum + (tx.amount || 0), 0);
+          const expected = txCategory ? (data?.categories || []).find((c: any) => c.name === txCategory)?.spent || 0 : data?.totalSpent || 0;
+          return (
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex justify-center items-end z-50 fixed">
-            <div className="bg-white w-full h-[85%] rounded-t-[2.5rem] p-6 shadow-2xl flex flex-col animate-in slide-in-from-bottom-10">
+            <div className="bg-white w-full max-w-md h-[85%] rounded-t-[2.5rem] p-6 shadow-2xl flex flex-col animate-in slide-in-from-bottom-10">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-black text-slate-900">כל ההוצאות - {currentMonthKey}</h3>
-                <X className="w-6 h-6 text-slate-400 cursor-pointer hover:text-slate-700" onClick={() => setShowAllTxModal(false)} />
+                <h3 className="text-xl font-black text-slate-900">{txCategory || 'כל ההוצאות'} · {monthLabel(selectedMonth)}</h3>
+                <X className="w-6 h-6 text-slate-400 cursor-pointer hover:text-slate-700" onClick={() => { setShowAllTxModal(false); setTxCategory(null); }} />
               </div>
               
               <div className="-mt-3 mb-4 text-xs text-slate-500 font-medium">
-                {data?.monthTransactions?.length || 0} עסקאות · סה"כ <span className="font-bold text-slate-800">₪{Math.round(data?.monthTotal || 0).toLocaleString()}</span>
-                {Math.round(data?.monthTotal || 0) !== Math.round(data?.totalSpent || 0) && (
+                {txList.length} עסקאות · סה"כ <span className="font-bold text-slate-800">₪{Math.round(txTotal).toLocaleString()}</span>
+                {Math.round(txTotal) !== Math.round(expected) && (
                   <div className="mt-1 text-[11px] text-orange-600">
-                    לא תואם לניצול (₪{Math.round(data?.totalSpent || 0).toLocaleString()}) — ייתכן שיש עסקה עם קטגוריה לא מוכרת
+                    לא תואם לניצול (₪{Math.round(expected).toLocaleString()}) — ייתכן שיש עסקה עם קטגוריה לא מוכרת
                   </div>
                 )}
               </div>
@@ -362,28 +410,30 @@ export default function BudgetDashboard() {
                 <span>סכום</span>
               </div>
               <div className="flex-1 overflow-y-auto pr-2 space-y-3">
-                {data?.monthTransactions?.map((tx: any) => (
+                {txList.map((tx: any) => (
                     <div key={tx.id} className="flex justify-between items-center text-sm border-b border-slate-100 pb-3 last:border-0">
                         <div className="flex items-center space-x-3 space-x-reverse">
                             <div className="w-10 h-10 rounded-full bg-slate-50 flex flex-col items-center justify-center border border-slate-100">
                                 <span className="text-xs font-bold text-slate-700">{tx.date?.split('/')[0]}</span>
                                 <span className="text-[8px] font-medium text-slate-400">{tx.date?.split('/')[1]}</span>
                             </div>
-                            <div className="flex flex-col">
-                              <span className="font-bold text-slate-800">{tx.desc}</span>
+                            <div className="flex flex-col min-w-0">
+                              <span className="font-bold text-slate-800 truncate">{tx.desc}</span>
                               <span className="text-[10px] text-slate-400">{tx.date}</span>
                             </div>
                         </div>
-                        <span className="font-black text-slate-900 tracking-tight text-base">₪{tx.amount?.toLocaleString() || 0}</span>
+                        <span className="flex-1 border-b-2 border-dotted border-slate-300 mx-3 self-center min-w-4"></span>
+                        <span className="font-black text-slate-900 tracking-tight text-base shrink-0">₪{tx.amount?.toLocaleString() || 0}</span>
                     </div>
                 ))}
-                {(data?.monthTransactions?.length || 0) === 0 && (
+                {txList.length === 0 && (
                   <div className="text-center text-slate-500 mt-10">אין עסקאות החודש</div>
                 )}
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
 
       </div>
     </div>
