@@ -160,6 +160,13 @@ export default function BudgetDashboard() {
         : `נשארו ${fmt(data.totalLeft)} ל-${daysRemaining} ימים · כ-${fmt(data.totalLeft / daysRemaining)} ליום`)
     : `חריגה מהתקציב החודשי של ${fmt(Math.abs(data?.totalLeft ?? 0))}`;
 
+  // קצב הוצאה: אחוז ניצול התקציב מול אחוז הזמן שעבר בחודש
+  const paceGap = timeProgress - budgetProgress;          // חיובי = לפני הקצב (הוצאת פחות מהזמן שעבר)
+  const expectedByNow = Math.round((data?.totalBudget || 0) * dayOfMonth / daysInMonth);
+  const paceDiff = expectedByNow - (data?.totalSpent || 0); // ₪ מתחת (+) / מעל (-) לקצב
+  const paceEarly = dayOfMonth <= 3;
+  const paceState = paceEarly ? 'early' : paceGap >= 5 ? 'ahead' : paceGap <= -5 ? 'behind' : 'on';
+
   // ניווט בין חודשים
   const HEB_MONTHS = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
   const monthLabel = (key: string) => { const [m, y] = (key || '').split('-'); return m ? `${HEB_MONTHS[Number(m) - 1]} ${y}` : ''; };
@@ -220,27 +227,50 @@ export default function BudgetDashboard() {
             )}
           </div>
           
+          {!isPast ? (
           <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700 backdrop-blur-sm mt-6">
-             {!isPast && (
              <div className="mb-3">
                <div className="flex justify-between text-xs text-slate-300 mb-1.5 font-medium">
-                 <span>זמן חודש ({today.getDate()}/{daysInMonth})</span><span>{timeProgress}%</span>
+                 <span>זמן חודש ({dayOfMonth}/{daysInMonth})</span><span>{timeProgress}%</span>
                </div>
                <div className="w-full bg-slate-950 rounded-full h-1">
                  <div className="bg-blue-400 h-1 rounded-full" style={{ width: `${timeProgress}%` }}></div>
                </div>
              </div>
-             )}
              <div>
                <div className="flex justify-between text-xs text-slate-300 mb-1.5 font-medium">
                  <span>ניצול ₪{data?.totalSpent?.toLocaleString() || 0} / ₪{data?.totalBudget?.toLocaleString() || 0}</span>
                  <span>{budgetProgress}%</span>
                </div>
-               <div className="w-full bg-slate-950 rounded-full h-1.5">
-                 <div className="bg-emerald-400 h-1.5 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.4)]" style={{ width: `${Math.min(budgetProgress, 100)}%` }}></div>
+               <div className="relative">
+                 <div className="w-full bg-slate-950 rounded-full h-1.5">
+                   <div className="bg-emerald-400 h-1.5 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.4)]" style={{ width: `${Math.min(budgetProgress, 100)}%` }}></div>
+                 </div>
+                 {/* סימון "היום" על פס הניצול */}
+                 <div className="absolute -top-1 h-3.5 w-0.5 bg-blue-300 rounded" style={{ right: `${timeProgress}%` }}></div>
                </div>
              </div>
+             {!paceEarly && (
+               <div className="mt-2.5 text-[11px] text-slate-400">
+                 {paceState === 'on'
+                   ? 'ההוצאה בקצב של התקציב'
+                   : paceDiff >= 0
+                     ? `עד היום הוצאת ₪${paceDiff.toLocaleString()} פחות מהקצב המתוכנן`
+                     : <span className="text-red-300">עד היום הוצאת ₪{Math.abs(paceDiff).toLocaleString()} יותר מהקצב המתוכנן</span>}
+               </div>
+             )}
           </div>
+          ) : (
+          <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700 backdrop-blur-sm mt-6">
+             <div className="flex justify-between text-xs text-slate-300 mb-1.5 font-medium">
+               <span>ניצול ₪{data?.totalSpent?.toLocaleString() || 0} / ₪{data?.totalBudget?.toLocaleString() || 0}</span>
+               <span>{budgetProgress}%</span>
+             </div>
+             <div className="w-full bg-slate-950 rounded-full h-1.5">
+               <div className="bg-emerald-400 h-1.5 rounded-full" style={{ width: `${Math.min(budgetProgress, 100)}%` }}></div>
+             </div>
+          </div>
+          )}
         </div>
 
         <div className="px-5 mt-6 pb-6">
@@ -268,7 +298,10 @@ export default function BudgetDashboard() {
 
             {/* קטגוריות גריד */}
             <div className="mt-6">
-                <span className="text-sm font-bold text-slate-800 px-1 mb-3 block">קטגוריות</span>
+                <div className="flex justify-between items-baseline px-1 mb-3">
+                  <span className="text-sm font-bold text-slate-800">קטגוריות</span>
+                  {!isPast && <span className="text-[10px] text-slate-400">הקו האנכי בכל כרטיס = היום בחודש ({timeProgress}%)</span>}
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                     {data?.categories?.map((cat: any, idx: number) => (
                         <div key={idx}
@@ -276,7 +309,7 @@ export default function BudgetDashboard() {
                           className={`border p-3.5 rounded-2xl shadow-sm relative overflow-hidden transition-colors cursor-pointer active:scale-[0.98] ${getCategoryStyle(cat.pct)}`}>
                             <div className="flex justify-between items-start mb-4">
                                 <span className={`text-lg ${cat.iconBg} rounded-xl p-1.5 bg-white shadow-sm`}>{cat.icon}</span>
-                                <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full backdrop-blur-sm">{cat.pct}%</span>
+                                <span className={`text-[10px] font-bold bg-white/70 px-2 py-0.5 rounded-full backdrop-blur-sm ${!isPast && cat.pct > timeProgress + 10 ? 'text-red-600' : 'text-slate-500'}`}>{cat.pct}%</span>
                             </div>
                             <h3 className="text-xs font-bold text-slate-600 mb-0.5">{cat.name}</h3>
                             <div className="flex justify-between items-baseline">
@@ -290,6 +323,7 @@ export default function BudgetDashboard() {
                             </div>
                             <div className="absolute bottom-0 left-0 w-full bg-slate-900/5 h-1">
                                 <div className={`${cat.pct >= 100 ? 'bg-red-500' : (cat.pct >= 60 ? 'bg-orange-400' : 'bg-slate-800')} h-1`} style={{ width: `${Math.min(cat.pct, 100)}%` }}></div>
+                                {!isPast && <div className="absolute bottom-0 h-2.5 w-0.5 bg-slate-900/70" style={{ right: `${timeProgress}%` }}></div>}
                             </div>
                         </div>
                     ))}
