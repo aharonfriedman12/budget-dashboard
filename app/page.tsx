@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
-import { ChevronRight, ChevronLeft, RefreshCw, Wallet, CalendarDays, History, X, Edit3, Lightbulb } from 'lucide-react';
+import { ChevronRight, ChevronLeft, RefreshCw, Wallet, CalendarDays, History, X, Edit3, Lightbulb, ArrowLeftRight } from 'lucide-react';
 
 export default function BudgetDashboard() {
   const [data, setData] = useState<any>(null);
@@ -13,6 +13,11 @@ export default function BudgetDashboard() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localNextMonthPrepared, setLocalNextMonthPrepared] = useState(false); // שומר מצב מקומי לאחר שמירה
   const [editMonth, setEditMonth] = useState<'current' | 'next'>('next'); // איזה חודש נערך בחלון היעדים
+  // ניוד תקציב בין קטגוריות
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transfer, setTransfer] = useState({ from: '', to: '', amount: '', reason: '' });
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferServerError, setTransferServerError] = useState('');
   
   const [nextTargets, setNextTargets] = useState({
     super: '',
@@ -167,6 +172,46 @@ export default function BudgetDashboard() {
   const paceEarly = dayOfMonth <= 3;
   const paceState = paceEarly ? 'early' : paceGap >= 5 ? 'ahead' : paceGap <= -5 ? 'behind' : 'on';
 
+  // ניוד תקציב: חלון פתוח ב-15–16 וב-25–26 לחודש בלבד; סכום אפס; עד 20% מיתרת קטגוריית המקור
+  // (השרת אוכף את אותם כללים בשעון ישראל — ראו app/api/transfer/route.ts)
+  const TRANSFER_DAYS = [15, 16, 25, 26];
+  const transferOpen = TRANSFER_DAYS.includes(dayOfMonth);
+  const nextTransferDay = TRANSFER_DAYS.find(d => d > dayOfMonth);
+  const nextTransferLabel = nextTransferDay ? `${nextTransferDay}/${today.getMonth() + 1}` : `15/${((today.getMonth() + 1) % 12) + 1}`;
+  const catByName = (n: string) => (data?.categories || []).find((c: any) => c.name === n);
+  const fromCat = catByName(transfer.from);
+  const toCat = catByName(transfer.to);
+  const transferCap = fromCat ? Math.max(0, Math.floor((fromCat.left || 0) * 0.2)) : 0;
+  const transferAmount = Number(transfer.amount) || 0;
+  const transferError = !transfer.from || !transfer.to ? '' :
+    transfer.from === transfer.to ? 'יש לבחור שתי קטגוריות שונות' :
+    transferAmount <= 0 ? '' :
+    transferAmount > transferCap ? `הסכום עובר את התקרה — עד ₪${transferCap.toLocaleString()} (20% מהיתרה)` : '';
+  const transferValid = !!fromCat && !!toCat && transfer.from !== transfer.to && transferAmount > 0 && !transferError;
+
+  const submitTransfer = async () => {
+    if (!transferValid || transferBusy) return;
+    setTransferBusy(true);
+    setTransferServerError('');
+    try {
+      const res = await fetch('/api/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: transfer.from, to: transfer.to, amount: transferAmount, reason: transfer.reason }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setTransferServerError(result.error || 'הניוד נכשל');
+      } else {
+        setTransfer({ from: '', to: '', amount: '', reason: '' });
+        await fetchBudget(null);
+      }
+    } catch {
+      setTransferServerError('אין חיבור. נסה שוב');
+    }
+    setTransferBusy(false);
+  };
+
   // ניווט בין חודשים
   const HEB_MONTHS = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
   const monthLabel = (key: string) => { const [m, y] = (key || '').split('-'); return m ? `${HEB_MONTHS[Number(m) - 1]} ${y}` : ''; };
@@ -298,8 +343,19 @@ export default function BudgetDashboard() {
 
             {/* קטגוריות גריד */}
             <div className="mt-6">
-                <div className="flex justify-between items-baseline px-1 mb-3">
-                  <span className="text-sm font-bold text-slate-800">קטגוריות</span>
+                <div className="flex flex-col gap-1 px-1 mb-3">
+                  <span className="text-sm font-bold text-slate-800 flex items-center gap-2">קטגוריות
+                    {!isPast && (transferOpen ? (
+                      <span onClick={() => { setTransfer({ from: '', to: '', amount: '', reason: '' }); setTransferServerError(''); setShowTransferModal(true); }}
+                        className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full flex items-center cursor-pointer active:bg-blue-100 whitespace-nowrap">
+                        <ArrowLeftRight className="w-3 h-3 ml-1" /> ניוד תקציב
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full flex items-center whitespace-nowrap">
+                        <ArrowLeftRight className="w-3 h-3 ml-1" /> ניוד הבא: {nextTransferLabel}
+                      </span>
+                    ))}
+                  </span>
                   {!isPast && <span className="text-[10px] text-slate-400">הקו האנכי בכל כרטיס = היום בחודש ({timeProgress}%)</span>}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -317,7 +373,13 @@ export default function BudgetDashboard() {
                                 <span className={`font-black text-lg tracking-tight ${(cat.left || 0) < 0 || cat.pct >= 100 ? 'text-red-700' : 'text-slate-900'}`}>₪{Math.abs(cat.left || 0).toLocaleString()}</span>
                             </div>
                             <div className="mt-1.5 mb-1 space-y-0.5 text-[10px] font-medium text-slate-500">
-                                <div className="flex justify-between"><span>יעד</span><span className="font-bold text-slate-600">₪{Math.round(cat.target || 0).toLocaleString()}</span></div>
+                                <div className="flex justify-between"><span>יעד</span>
+                                  {cat.targetOriginal != null && cat.targetOriginal !== cat.target ? (
+                                    <span className="font-bold text-slate-600"><span className="text-slate-400 line-through font-medium">₪{Math.round(cat.targetOriginal).toLocaleString()}</span> ← ₪{Math.round(cat.target).toLocaleString()} <span className="text-[9px] text-blue-600 bg-blue-50 px-1 rounded">ניוד</span></span>
+                                  ) : (
+                                    <span className="font-bold text-slate-600">₪{Math.round(cat.target || 0).toLocaleString()}</span>
+                                  )}
+                                </div>
                                 <div className="flex justify-between"><span>ממוצע חודשי</span><span className="font-bold text-slate-600">₪{Math.round(cat.avg || 0).toLocaleString()}</span></div>
                                 <div className="flex justify-between"><span>נגרר מחודש קודם</span><span className={`font-bold ${(cat.carry || 0) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>₪{Math.round(cat.carry || 0).toLocaleString()}</span></div>
                             </div>
@@ -355,6 +417,71 @@ export default function BudgetDashboard() {
                 </span>
             </div>
         </div>
+
+        {/* Modal: ניוד תקציב */}
+        {showTransferModal && (
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex justify-center items-end z-50 fixed">
+            <div className="bg-white w-full max-w-md rounded-t-[2.5rem] p-6 shadow-2xl">
+              <div className="flex justify-between items-center mb-1">
+                <h3 className="text-xl font-black text-slate-900">ניוד תקציב · {monthLabel(selectedMonth)}</h3>
+                <X className="w-6 h-6 text-slate-400 cursor-pointer" onClick={() => setShowTransferModal(false)} />
+              </div>
+              <p className="text-[11px] text-slate-400 mb-5">מעבירים יתרה בין קטגוריות. סה"כ התקציב לא משתנה.</p>
+
+              <div className="space-y-3">
+                {(['from', 'to'] as const).map(side => (
+                  <div key={side} className="flex justify-between items-center gap-3">
+                    <span className="text-sm font-bold text-slate-700 w-16">{side === 'from' ? 'מ-' : 'אל'}</span>
+                    <select value={transfer[side]} onChange={e => setTransfer({ ...transfer, [side]: e.target.value })}
+                      className="flex-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm font-bold text-slate-900 outline-none focus:border-blue-500">
+                      <option value="">בחר קטגוריה</option>
+                      {(data?.categories || []).map((c: any) => (
+                        <option key={c.name} value={c.name}>{c.name.trim()} · יתרה ₪{Math.round(c.left).toLocaleString()}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+                <div className="flex justify-between items-center gap-3">
+                  <span className="text-sm font-bold text-slate-700 w-16">סכום</span>
+                  <input type="number" placeholder="₪" value={transfer.amount} onChange={e => setTransfer({ ...transfer, amount: e.target.value })}
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-center text-sm font-bold text-slate-900 outline-none focus:border-blue-500" />
+                </div>
+                {fromCat && <div className="text-[11px] text-slate-400 -mt-1 text-left">תקרה: עד ₪{transferCap.toLocaleString()} (20% מיתרת {fromCat.name.trim()})</div>}
+                <div className="flex justify-between items-center gap-3">
+                  <span className="text-sm font-bold text-slate-700 w-16">סיבה</span>
+                  <input type="text" placeholder="למשל: חניה ביום חתונה" value={transfer.reason} onChange={e => setTransfer({ ...transfer, reason: e.target.value })}
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm text-slate-900 outline-none focus:border-blue-500" />
+                </div>
+              </div>
+
+              {(transferError || transferServerError) && <div className="mt-3 text-xs font-bold text-red-600">{transferError || transferServerError}</div>}
+              {transferValid && (
+                <div className="mt-4 bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs text-slate-600 space-y-1">
+                  <div className="flex justify-between"><span>{fromCat.name.trim()}</span><span>יעד ₪{fromCat.target.toLocaleString()} ← <b>₪{(fromCat.target - transferAmount).toLocaleString()}</b></span></div>
+                  <div className="flex justify-between"><span>{toCat.name.trim()}</span><span>יעד ₪{toCat.target.toLocaleString()} ← <b>₪{(toCat.target + transferAmount).toLocaleString()}</b></span></div>
+                  <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-bold text-slate-800"><span>סה"כ התקציב</span><span>₪{(data?.totalBudget || 0).toLocaleString()} (ללא שינוי)</span></div>
+                </div>
+              )}
+
+              <button disabled={!transferValid || transferBusy} onClick={submitTransfer}
+                className="w-full mt-5 bg-blue-600 text-white font-bold py-4 rounded-2xl disabled:bg-slate-300 shadow-lg shadow-blue-600/30">
+                {transferBusy ? 'מבצע...' : 'בצע ניוד'}
+              </button>
+
+              {(data?.transfers || []).length > 0 && (
+                <div className="mt-5">
+                  <div className="text-[11px] font-bold text-slate-400 mb-2">ניודים החודש</div>
+                  {data.transfers.map((t: any, i: number) => (
+                    <div key={i} className="flex justify-between items-center text-xs text-slate-600 border-b border-slate-50 py-1.5">
+                      <span>{t.date} · {t.from} ← {t.to}{t.reason ? ` · ${t.reason}` : ''}</span>
+                      <span className="font-bold text-slate-900">₪{t.amount}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Modal: הזנת יעדים */}
         {showNextMonthModal && (

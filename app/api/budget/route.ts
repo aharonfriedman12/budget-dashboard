@@ -55,10 +55,11 @@ export async function GET(request: Request) {
     const response = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: process.env.SPREADSHEET_ID,
       ranges: [
-        "'סיכום_מצב'!A:F",
+        "'סיכום_מצב'!A:G",
         "'מעקב תקציב שבועי ויעדי פרישה'!A:F",
         "'יעדים_חודשיים'!A:F",
         "'ארכיון_ביצועים'!A:H",
+        "'ניודים'!A:F",
       ],
     });
 
@@ -66,6 +67,7 @@ export async function GET(request: Request) {
     const transactionRows = response.data.valueRanges?.[1]?.values || [];
     const targetRows = response.data.valueRanges?.[2]?.values || [];
     const archiveRows = (response.data.valueRanges?.[3]?.values || []).slice(1);
+    const transferRows = (response.data.valueRanges?.[4]?.values || []).slice(1);
 
     if (summaryRows.length === 0) {
       return NextResponse.json({ error: 'לא נמצאו נתוני סיכום. ודא שללשונית קוראים סיכום_מצב' }, { status: 404 });
@@ -99,9 +101,12 @@ export async function GET(request: Request) {
       if (!row || !row[0]) continue;
       const name = String(row[0]);
 
-      let target: number, spent: number, left: number, avg: number, carry: number;
+      // target = יעד אחרי ניודים (עמודה G), targetOriginal = היעד שנקבע (עמודה B).
+      // הארכיון והממוצע נשארים על היעד המקורי.
+      let target: number, targetOriginal: number, spent: number, left: number, avg: number, carry: number;
       if (!isPastMonth) {
-        target = parseCurrency(row[1]);
+        targetOriginal = parseCurrency(row[1]);
+        target = row[6] != null && String(row[6]).trim() !== '' ? parseCurrency(row[6]) : targetOriginal;
         spent = parseCurrency(row[2]);
         left = parseCurrency(row[3]);
         avg = parseCurrency(row[4]);   // ממוצע (מתוך ארכיון_ביצועים)
@@ -111,6 +116,7 @@ export async function GET(request: Request) {
         const a = archiveRow(selectedMonth, name);
         const p = archiveRow(prevMonthKey(selectedMonth), name);
         target = parseCurrency(a?.[2]);
+        targetOriginal = target;
         spent = parseCurrency(a?.[3]);
         left = parseCurrency(a?.[4]);
         avg = parseCurrency(p?.[5]);
@@ -118,7 +124,7 @@ export async function GET(request: Request) {
       }
 
       const pct = target > 0 ? Math.round((spent / target) * 100) : 0;
-      categories.push({ name, target, spent, left, avg, carry, ...categoryStyle(name), pct });
+      categories.push({ name, target, targetOriginal, spent, left, avg, carry, ...categoryStyle(name), pct });
 
       totalBudget += target;
       totalSpent += spent;
@@ -155,8 +161,21 @@ export async function GET(request: Request) {
       }
     }
 
+    // ניודים של החודש הנבחר (מהחדש לישן)
+    const transfers = transferRows
+      .filter(r => cleanKey(r?.[1]) === selectedMonth && r?.[2] && r?.[3])
+      .map(r => ({
+        date: String(r[0] ?? ''),
+        from: String(r[2]).trim(),
+        to: String(r[3]).trim(),
+        amount: parseCurrency(r[4]),
+        reason: String(r[5] ?? '').trim(),
+      }))
+      .reverse();
+
     return NextResponse.json({
       categories,
+      transfers,
       totalBudget,
       totalSpent,
       totalLeft,
